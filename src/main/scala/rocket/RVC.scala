@@ -32,6 +32,8 @@ class RVCDecoder(x: UInt, xLen: Int, fLen: Int, useAddiForMv: Boolean = false) {
   def rs2 = x(6,2)
   def rd = x(11,7)
   def addi4spnImm = Cat(x(10,7), x(12,11), x(5), x(6), 0.U(2.W))
+  def lbImm = Cat(x(5), x(6))
+  def lhImm = Cat(x(5), 0.U(1.W))
   def lwImm = Cat(x(5), x(12,10), x(6), 0.U(2.W))
   def ldImm = Cat(x(6,5), x(12,10), 0.U(3.W))
   def lwspImm = Cat(x(3,2), x(12), x(6,4), 0.U(2.W))
@@ -60,7 +62,6 @@ class RVCDecoder(x: UInt, xLen: Int, fLen: Int, useAddiForMv: Boolean = false) {
       if (xLen == 32) inst(Cat(lwImm, rs1p, 2.U(3.W), rs2p, 0x07.U(7.W)), rs2p, rs1p, rs2p)
       else ld
     }
-    def unimp = inst(Cat(lwImm >> 5, rs2p, rs1p, 2.U(3.W), lwImm(4,0), 0x3F.U(7.W)), rs2p, rs1p, rs2p)
     def sd = inst(Cat(ldImm >> 5, rs2p, rs1p, 3.U(3.W), ldImm(4,0), 0x23.U(7.W)), rs2p, rs1p, rs2p)
     def sw = inst(Cat(lwImm >> 5, rs2p, rs1p, 2.U(3.W), lwImm(4,0), 0x23.U(7.W)), rs2p, rs1p, rs2p)
     def fsd = inst(Cat(ldImm >> 5, rs2p, rs1p, 3.U(3.W), ldImm(4,0), 0x27.U(7.W)), rs2p, rs1p, rs2p)
@@ -68,7 +69,20 @@ class RVCDecoder(x: UInt, xLen: Int, fLen: Int, useAddiForMv: Boolean = false) {
       if (xLen == 32) inst(Cat(lwImm >> 5, rs2p, rs1p, 2.U(3.W), lwImm(4,0), 0x27.U(7.W)), rs2p, rs1p, rs2p)
       else sd
     }
-    Seq(addi4spn, fld, lw, flw, unimp, fsd, sw, fsw)
+
+    def zcb = {
+      def lbu = Cat(lbImm, rs1p, 4.U(3.W), rs2p, 0x03.U(7.W))
+      def lh = {
+        val func3 = Mux(x(6), 1.U(3.W), 5.U(3.W))
+        Cat(lhImm, rs1p, func3, rs2p, 0x03.U(7.W))
+      }
+      def sb = Cat(rs2p, rs1p, 0.U(3.W), 0.U(3.W), lbImm(1, 0), 0x23.U(7.W))
+      def sh = Cat(rs2p, rs1p, 1.U(3.W), 0.U(3.W), lhImm(1, 0), 0x23.U(7.W))
+
+      inst(Seq(lbu, lh, sb, sh)(x(11,10)), rs2p, rs1p, rs2p)
+    }
+
+    Seq(addi4spn, fld, lw, flw, zcb, fsd, sw, fsw)
   }
 
   def q1 = {
@@ -89,26 +103,55 @@ class RVCDecoder(x: UInt, xLen: Int, fLen: Int, useAddiForMv: Boolean = false) {
     def lui = {
       val opc = Mux(addiImm.orR, 0x37.U(7.W), 0x3F.U(7.W))
       val me = inst(Cat(luiImm(31,12), rd, opc), rd, rd, rs2p)
-      Mux(rd === x0 || rd === sp, addi16sp, me)
+      val zc = (x(6,2) === 0.U && x(12,11) === 0.U)
+      val nop = inst(Cat(0.U(12.W), 0.U(5.W), 7.U(3.W), 0.U(5.W), 0x13.U(7.W)), 0.U, 0.U, 0.U, 0.U)
+      Mux(zc, nop, Mux(rd === x0 || rd === sp, addi16sp, me))
     }
     def j = inst(Cat(jImm(20), jImm(10,1), jImm(11), jImm(19,12), x0, 0x6F.U(7.W)), x0, rs1p, rs2p)
     def beqz = inst(Cat(bImm(12), bImm(10,5), x0, rs1p, 0.U(3.W), bImm(4,1), bImm(11), 0x63.U(7.W)), rs1p, rs1p, x0)
     def bnez = inst(Cat(bImm(12), bImm(10,5), x0, rs1p, 1.U(3.W), bImm(4,1), bImm(11), 0x63.U(7.W)), x0, rs1p, x0)
     def arith = {
+      def unimp = 0.U
       def srli = Cat(shamt, rs1p, 5.U(3.W), rs1p, 0x13.U(7.W))
       def srai = srli | (1 << 30).U
       def andi = Cat(addiImm, rs1p, 7.U(3.W), rs1p, 0x13.U(7.W))
       def rtype = {
-        val funct = Seq(0.U, 4.U, 6.U, 7.U, 0.U, 0.U, 2.U, 3.U)(Cat(x(12), x(6,5)))
+        val funct = Seq(0.U, 4.U, 6.U, 7.U, 0.U, 0.U, 0.U, 3.U)(Cat(x(12), x(6,5)))
         val sub = Mux(x(6,5) === 0.U, (1 << 30).U, 0.U)
-        val opc = Mux(x(12), 0x3B.U(7.W), 0x33.U(7.W))
-        Cat(rs2p, rs1p, funct, rs1p, opc) | sub
+        val opc = Mux(x(12), Mux(x(6), 0x33.U(7.W), 0x3B.U(7.W)), 0x33.U(7.W))
+        def mul = Mux(Cat(x(12), x(6,5)) === 6.U, (1 << 25).U, 0.U)
+        def zcaAndMul = Cat(rs2p, rs1p, funct, rs1p, opc) | sub | mul
+        def zcb = {
+          def zextb = Cat(0xFF.U, rs1p, 7.U(3.W), rs1p, 0x13.U(7.W))
+          def not = Cat(0xFFF.U, rs1p, 4.U(3.W), rs1p, 0x13.U(7.W))
+          def sextb = Cat(0x604.U, rs1p, 1.U(3.W), rs1p, 0x13.U(7.W))
+          def sexth = Cat(0x605.U, rs1p, 1.U(3.W), rs1p, 0x13.U(7.W))
+          def zextw = {
+            if (xLen == 32) {
+              unimp // Illegal instruction in RV32
+            } else {
+              Cat(4.U, x0, rs1p, 0.U(3.W), rs1p, 0x3B.U(7.W))
+            }
+          }
+          def zexth = {
+            val zexth_common = Cat(0x80.U, rs1p, 4.U(3.W), rs1p)
+            if (xLen == 32) Cat(zexth_common, 0x33.U(7.W))
+            else Cat(zexth_common, 0x3B.U(7.W))
+          }
+          Seq(zextb, sextb, zexth, sexth, zextw, not, unimp, unimp)(x(4,2))
+        }
+
+        Mux(Cat(x(12), x(6,5)) === 7.U, zcb, zcaAndMul)
       }
-      inst(Seq(srli, srai, andi, rtype)(x(11,10)), rs1p, rs1p, rs2p)
+
+      // c.zext.w => add.uw rdrs1, rdrs1, zero
+      def op2 = Mux(Cat(x(15,10), x(6,2)) === 0x4FC.U, x0, rs2p)
+      
+      inst(Seq(srli, srai, andi, rtype)(x(11,10)), rs1p, rs1p, op2)
     }
     Seq(addi, jal, li, lui, arith, j, beqz, bnez)
   }
-  
+
   def q2 = {
     val load_opc = Mux(rd.orR, 0x03.U(7.W), 0x1F.U(7.W))
     def slli = inst(Cat(shamt, rd, 1.U(3.W), rd, 0x13.U(7.W)), rd, rd, rs2)
@@ -190,6 +233,7 @@ class RVCDecoder(x: UInt, xLen: Int, fLen: Int, useAddiForMv: Boolean = false) {
 class RVCExpander(useAddiForMv: Boolean = false)(implicit val p: Parameters) extends Module with HasCoreParameters {
   val io = IO(new Bundle {
     val in = Input(UInt(32.W))
+    val fsIsOff = Input(Bool())
     val out = Output(new ExpandedInstruction)
     val rvc = Output(Bool())
     val ill = Output(Bool())

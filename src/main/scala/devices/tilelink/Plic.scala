@@ -167,7 +167,7 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
       if (nPriorities > 0) RegInit(VecInit(Seq.fill(nDevices)(0.U(prioBits.W))))
       else WireDefault(VecInit.fill(nDevices max 1)(1.U))
     val threshold =
-      if (nPriorities > 0) Reg(Vec(nHarts, UInt(prioBits.W)))
+      if (nPriorities > 0) RegInit(VecInit.fill(nHarts)(0.U(prioBits.W)))
       else WireDefault(VecInit.fill(nHarts)(0.U))
     val pending = RegInit(VecInit.fill(nDevices max 1){false.B})
 
@@ -181,8 +181,8 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
     val enables = Seq.fill(nHarts) { enableRegs }
     val enableVec = VecInit(enables.map(x => Cat(x.reverse)))
     val enableVec0 = VecInit(enableVec.map(x => Cat(x, 0.U(1.W))))
-    
-    val maxDevs = Reg(Vec(nHarts, UInt(log2Ceil(nDevices+1).W)))
+
+    val maxDevs = RegInit(VecInit.fill(nHarts)(0.U(log2Ceil(nDevices+1).W)))
     val pendingUInt = Cat(pending.reverse)
     if(nDevices > 0) {
       for (hart <- 0 until nHarts) {
@@ -190,7 +190,7 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
         fanin.io.prio := priority
         fanin.io.ip := enableVec(hart) & pendingUInt
         maxDevs(hart) := fanin.io.dev
-        harts(hart) := ShiftRegister(RegNext(fanin.io.max) > threshold(hart), params.intStages)
+        harts(hart) := ShiftRegister(RegNext(fanin.io.max, 0.U) > threshold(hart), params.intStages)
       }
     }
 
