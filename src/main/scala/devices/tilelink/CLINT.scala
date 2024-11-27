@@ -73,8 +73,9 @@ class CLINT(params: CLINTParams, beatBytes: Int)(implicit p: Parameters) extends
     val time = RegInit(0.U(timeWidth.W))
     when (io.rtcTick) { time := time + 1.U }
 
+    val timecmpResetVal = (-1).S(timeWidth.W).asUInt
     val nTiles = intnode.out.size
-    val timecmp = Seq.fill(nTiles) { Reg(UInt(timeWidth.W)) }
+    val timecmp = RegInit(VecInit(Seq.fill(nTiles)(timecmpResetVal)))
     val ipi = Seq.fill(nTiles) { RegInit(0.U(1.W)) }
 
     val (intnode_out, _) = intnode.out.unzip
