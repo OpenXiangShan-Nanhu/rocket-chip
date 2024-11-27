@@ -162,7 +162,7 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
 
     val prioBits = log2Ceil(nPriorities+1)
     val priority =
-      if (nPriorities > 0) Reg(Vec(nDevices, UInt(prioBits.W)))
+      if (nPriorities > 0) RegInit(VecInit(Seq.fill(nDevices)(0.U(prioBits.W))))
       else WireDefault(VecInit.fill(nDevices max 1)(1.U))
     val threshold =
       if (nPriorities > 0) Reg(Vec(nHarts, UInt(prioBits.W)))
@@ -173,9 +173,9 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
     val firstEnable = nDevices min 7
     val fullEnables = (nDevices - firstEnable) / 8
     val tailEnable  = nDevices - firstEnable - 8*fullEnables
-    def enableRegs = (Reg(UInt(firstEnable.W)) +:
-                      Seq.fill(fullEnables) { Reg(UInt(8.W)) }) ++
-                     (if (tailEnable > 0) Some(Reg(UInt(tailEnable.W))) else None)
+    def enableRegs = (RegInit(0.U(firstEnable.W)) +:
+                      Seq.fill(fullEnables) { RegInit(0.U(8.W)) }) ++
+                     (if (tailEnable > 0) Some(RegInit(0.U(tailEnable.W))) else None)
     val enables = Seq.fill(nHarts) { enableRegs }
     val enableVec = VecInit(enables.map(x => Cat(x.reverse)))
     val enableVec0 = VecInit(enableVec.map(x => Cat(x, 0.U(1.W))))
