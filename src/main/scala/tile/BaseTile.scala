@@ -194,7 +194,15 @@ trait HasNonDiplomaticTileParameters {
   * Only mix this trait into LazyModuleImps, Modules, Bundles, Data, etc.
   */
 trait HasTileParameters extends HasNonDiplomaticTileParameters {
-  protected def tlBundleParams = p(TileVisibilityNodeKey).edges.out.head.bundle
+  protected def tlBundleParams = {
+    val inEdges = p(TileVisibilityNodeKey).edges.in
+    val outEdges = p(TileVisibilityNodeKey).edges.out
+    val mstMaxAddr = inEdges.flatMap(_.master.masters).flatMap(_.visibility).map(_.max).max
+    val slvMaxAddr = outEdges.flatMap(_.slave.slaves).flatMap(_.address).map(_.max).max
+    val mstAddrBits = log2Ceil(mstMaxAddr)
+    val slvAddrBits = log2Ceil(slvMaxAddr)
+    p(TileVisibilityNodeKey).edges.out.head.bundle.copy(addressBits = mstAddrBits.min(slvAddrBits))
+  }
   lazy val paddrBits: Int = {
     val bits = tlBundleParams.addressBits
     require(bits <= maxPAddrBits, s"Requested $bits paddr bits, but since xLen is $xLen only $maxPAddrBits will fit")
