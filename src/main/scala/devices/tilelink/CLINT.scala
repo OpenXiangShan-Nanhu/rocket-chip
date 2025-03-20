@@ -68,8 +68,10 @@ class CLINT(params: CLINTParams, beatBytes: Int)(implicit p: Parameters) extends
       val rtcTick = Input(Bool())
     })
 
+    private val rtcSampler = Reg(UInt(2.W))
+    rtcSampler := Cat(rtcSampler, io.rtcTick)(1, 0)
     val time = RegInit(0.U(timeWidth.W))
-    when (io.rtcTick) { time := time + 1.U }
+    when (rtcSampler === 1.U) { time := time + 1.U }
 
     val timecmpResetVal = (-1).S(timeWidth.W).asUInt
     val nTiles = intnode.out.size
