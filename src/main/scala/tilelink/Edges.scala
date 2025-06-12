@@ -68,7 +68,7 @@ class TLEdge(
       case c: TLBundleC => c.opcode(2) && c.opcode(1)
         //    opcode === TLMessages.Release ||
         //    opcode === TLMessages.ReleaseData
-      case d: TLBundleD => d.opcode(2) && !d.opcode(1)
+      case d: TLBundleD => (d.opcode(2) && !d.opcode(1)) || (d.opcode === TLMessages.CBOAck)
         //    opcode === TLMessages.Grant     ||
         //    opcode === TLMessages.GrantData
       case e: TLBundleE => false.B
