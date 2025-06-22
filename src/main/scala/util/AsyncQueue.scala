@@ -79,13 +79,11 @@ class AsyncQueueSource[T <: Data](gen: T, params: AsyncQueueParams = AsyncQueueP
 
   val bits = params.bits
   val sink_ready = WireInit(true.B)
-  val mem = Reg(Vec(params.depth, gen)) // This does NOT need to be reset at all.
   val widx = withReset(reset.asAsyncReset)(GrayCounter(bits+1, io.enq.fire, !sink_ready, "widx_bin"))
   val ridx = AsyncResetSynchronizerShiftReg(io.async.ridx, params.sync, Some("ridx_gray"))
   val ready = sink_ready && widx =/= (ridx ^ (params.depth | params.depth >> 1).U)
 
   val index = if (bits == 0) 0.U else io.async.widx(bits-1, 0) ^ (io.async.widx(bits, bits) << (bits-1))
-  when (io.enq.fire) { mem(index) := io.enq.bits }
 
   val ready_reg = withReset(reset.asAsyncReset)(RegNext(next=ready, init=false.B).suggestName("ready_reg"))
   io.enq.ready := ready_reg && sink_ready
@@ -93,9 +91,14 @@ class AsyncQueueSource[T <: Data](gen: T, params: AsyncQueueParams = AsyncQueueP
   val widx_reg = withReset(reset.asAsyncReset)(RegNext(next=widx, init=0.U).suggestName("widx_gray"))
   io.async.widx := widx_reg
 
-  io.async.index match {
-    case Some(index) => io.async.mem(0) := mem(index)
-    case None => io.async.mem := mem
+  if(params.narrow) {
+    val mem = Mem(params.depth, gen)
+    when (io.enq.fire) { mem(index) := io.enq.bits }
+    io.async.mem(0) := mem(io.async.index.get)
+  } else {
+    val mem = Reg(Vec(params.depth, gen))
+    when (io.enq.fire) { mem(index) := io.enq.bits }
+    io.async.mem := mem
   }
 
   io.async.safe.foreach { sio =>
