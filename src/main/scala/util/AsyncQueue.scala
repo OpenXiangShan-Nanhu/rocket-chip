@@ -75,6 +75,7 @@ class AsyncQueueSource[T <: Data](gen: T, params: AsyncQueueParams = AsyncQueueP
     val enq = Flipped(Decoupled(gen))
     // These cross to the sink clock domain
     val async = new AsyncBundle(gen, params)
+    val empty = Output(Bool())
   })
 
   val bits = params.bits
@@ -82,6 +83,7 @@ class AsyncQueueSource[T <: Data](gen: T, params: AsyncQueueParams = AsyncQueueP
   val widx = withReset(reset.asAsyncReset)(GrayCounter(bits+1, io.enq.fire, !sink_ready, "widx_bin"))
   val ridx = AsyncResetSynchronizerShiftReg(io.async.ridx, params.sync, Some("ridx_gray"))
   val ready = sink_ready && widx =/= (ridx ^ (params.depth | params.depth >> 1).U)
+  io.empty := sink_ready && widx === ridx
 
   val index = if (bits == 0) 0.U else io.async.widx(bits-1, 0) ^ (io.async.widx(bits, bits) << (bits-1))
 
