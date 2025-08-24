@@ -4,6 +4,7 @@ package freechips.rocketchip.tilelink
 
 import chisel3._
 import chisel3.util._
+import chisel3.util.random.LFSR
 
 import org.chipsalliance.cde.config._
 import org.chipsalliance.diplomacy.lazymodule._
@@ -65,7 +66,7 @@ trait HasNoiseMakerIO
 
 class LFSRNoiseMaker(wide: Int) extends Module with HasNoiseMakerIO
 {
-  val lfsrs = Seq.fill((wide+63)/64) { LFSR64(io.inc) }
+  val lfsrs = Seq.fill((wide+63)/64) { LFSR(64, io.inc) }
   io.random := Cat(lfsrs)(wide-1,0)
 }
 
