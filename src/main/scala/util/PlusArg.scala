@@ -3,7 +3,6 @@
 package freechips.rocketchip.util
 
 import chisel3._
-import chisel3.experimental._
 import chisel3.util.HasBlackBoxResource
 
 @deprecated("This will be removed in Rocket Chip 2020.08", "Rocket Chip 2020.05")
@@ -43,9 +42,9 @@ object Doctypes {
 }
 
 class plusarg_reader(val format: String, val default: BigInt, val docstring: String, val width: Int) extends BlackBox(Map(
-    "FORMAT"  -> StringParam(format),
-    "DEFAULT" -> IntParam(default),
-    "WIDTH" -> IntParam(width)
+    "FORMAT"  -> format,
+    "DEFAULT" -> default,
+    "WIDTH" -> width
   )) with HasBlackBoxResource {
   val io = IO(new Bundle {
     val out = Output(UInt(width.W))
