@@ -115,7 +115,7 @@ class RVCDecoder(x: UInt, fsIsOff: Bool, xLen: Int, fLen: Int, useAddiForMv: Boo
       val me = inst(Cat(luiImm(31,12), rd, opc), rd, rd, rs2p)
       val zcmop = x(7) && x(6,2) === 0.U && x(12,11) === 0.U
       val nop = inst(Cat(0.U(12.W), 0.U(5.W), 0.U(3.W), 0.U(5.W), 0x13.U(7.W)), 0.U, 0.U, 0.U, 0.U)
-      Mux(zcmop, nop, Mux(rd === sp, addi16sp, me))
+      Mux(rd === sp, addi16sp, me)
     }
     def j = inst(Cat(jImm(20), jImm(10,1), jImm(11), jImm(19,12), x0, 0x6F.U(7.W)), x0, rs1p, rs2p)
     def beqz = inst(Cat(bImm(12), bImm(10,5), x0, rs1p, 0.U(3.W), bImm(4,1), bImm(11), 0x63.U(7.W)), rs1p, rs1p, x0)
@@ -225,8 +225,7 @@ class RVCDecoder(x: UInt, fsIsOff: Bool, xLen: Int, fLen: Int, useAddiForMv: Boo
   def q1_ill = {
     def rd0 = if (xLen == 32) false.B else rd === 0.U
     def immz = !(x(12) | x(6, 2).orR)
-    def mop = !x(11) && x(7)
-    def lui_res = immz && !mop
+    def lui_res = immz
     def zcb_res = x(12, 10).andR && x(6, 3).andR
     Seq(false.B, rd0, false.B, lui_res, zcb_res, false.B, false.B, false.B)
   }
