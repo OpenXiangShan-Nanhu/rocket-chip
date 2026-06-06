@@ -40,6 +40,13 @@ class LevelGateway extends Module {
   io.plic.valid := io.interrupt && !inFlight
 }
 
+/** Tracks the in-service interrupt for a hart, used for secure interrupt claim/complete validation */
+class IrqTrackEntry(nDevices: Int) extends Bundle {
+  val irq_id     = UInt(log2Ceil(nDevices + 1).W)  // interrupt ID currently in service (0 = none)
+  val req_sec    = Bool()                           // whether the in-service interrupt is secure
+  val in_service = Bool()                           // whether an interrupt is currently being serviced
+}
+
 object PLICConsts
 {
   def maxDevices = 1023
@@ -51,6 +58,10 @@ object PLICConsts
 
   def claimOffset = 4
   def priorityBytes = 4
+
+  // Secure interrupt extension register bases
+  def secSrcBase     = 0x1F4000   // security attribute per interrupt source (after enable region)
+  def worldStateBase = 0x1F8000   // world state per hart (TEE=1 / REE=0)
 
   def enableOffset(i: Int) = i * ((maxDevices+7)/8)
   def hartOffset(i: Int) = i * 0x1000
@@ -179,14 +190,29 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
     val enables = Seq.fill(nHarts) { enableRegs }
     val enableVec = VecInit(enables.map(x => Cat(x.reverse)))
     val enableVec0 = VecInit(enableVec.map(x => Cat(x, 0.U(1.W))))
-    
+
+    // --- Secure interrupt extension registers ---
+    // sec_src: 1-bit security attribute per interrupt source (0=Non-secure, 1=Secure)
+    val sec_src = RegInit(VecInit(Seq.fill(nDevices max 1)(false.B)))
+    // world_state: 1-bit world state per hart (0=REE, 1=TEE), synced from hart CSR
+    val world_state = RegInit(VecInit(Seq.fill(nHarts)(false.B)))
+    // irq_track: tracks the in-service interrupt for claim/complete validation
+    val irq_track = RegInit(VecInit(Seq.fill(nHarts)(0.U.asTypeOf(new IrqTrackEntry(nDevices)))))
+
     val maxDevs = Reg(Vec(nHarts, UInt(log2Ceil(nDevices+1).W)))
     val pendingUInt = Cat(pending.reverse)
     if(nDevices > 0) {
+      val sec_src_uint = Cat(sec_src.reverse)   // nDevices bits, MSB-first like pendingUInt
+      val sec_busy = VecInit(irq_track.map(t => t.in_service && t.req_sec))
+
       for (hart <- 0 until nHarts) {
         val fanin = Module(new PLICFanIn(nDevices, prioBits))
         fanin.io.prio := priority
-        fanin.io.ip := enableVec(hart) & pendingUInt
+        // Security filtering:
+        //   Secure interrupts  (sec_src=1): always visible
+        //   Non-secure interrupts (sec_src=0): blocked when hart is in TEE (world_state=1) AND servicing a secure interrupt (sec_busy=1)
+        val blocked = ~sec_src_uint & Fill(nDevices, world_state(hart) & sec_busy(hart))
+        fanin.io.ip := enableVec(hart) & pendingUInt & ~blocked
         maxDevs(hart) := fanin.io.dev
         harts(hart) := ShiftRegister(RegNext(fanin.io.max) > threshold(hart), params.intStages)
       }
@@ -223,6 +249,20 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
         groupDesc = Some(s"Enable bits for each interrupt source for target $i. 1 bit for each interrupt source."))
     }
 
+    def secSrcRegDesc(i: Int) =
+      RegFieldDesc(
+        name      = s"sec_src_$i",
+        desc      = s"Security attribute of interrupt source $i. 0=Non-secure, 1=Secure.",
+        group     = Some("sec_src"),
+        groupDesc = Some("Security attribute for each interrupt source. 1 bit per source."))
+
+    def worldStateRegDesc(i: Int) =
+      RegFieldDesc(
+        name      = s"world_state_$i",
+        desc      = s"Current world state of hart $i. 0=REE, 1=TEE.",
+        group     = Some("world_state"),
+        groupDesc = Some("World state for each hart. 1 bit per hart."))
+
     def priorityRegField(x: UInt, i: Int) =
       if (nPriorities > 0) {
         RegField(prioBits, x, priorityRegDesc(i))
@@ -239,6 +279,14 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
       PLICConsts.enableBase(i) -> (RegField(1) +: e.zipWithIndex.map { case (x, j) =>
         RegField(x.getWidth, x, enableRegDesc(i, j, x.getWidth)) }) }
 
+    val secSrcRegFields = Seq(PLICConsts.secSrcBase ->
+      (RegField(1) +: sec_src.zipWithIndex.map { case (s, i) =>
+        RegField(1, s, secSrcRegDesc(i+1)) }))
+
+    val worldStateRegFields = Seq(PLICConsts.worldStateBase ->
+      (RegField(1) +: world_state.zipWithIndex.map { case (w, i) =>
+        RegField(1, w, worldStateRegDesc(i)) }))
+
     // When a hart reads a claim/complete register, then the
     // device which is currently its highest priority is no longer pending.
     // This code exploits the fact that, practically, only one claim/complete
@@ -253,6 +301,15 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
     ((pending zip gateways) zip claimedDevs.tail) foreach { case ((p, g), c) =>
       g.ready := !p
       when (c || g.valid) { p := !c }
+    }
+
+    // Latch irq_track on successful claim: record which interrupt was claimed and its security attribute
+    for (i <- 0 until nHarts) {
+      when (claimer(i) && maxDevs(i) =/= 0.U) {
+        irq_track(i).irq_id     := maxDevs(i)
+        irq_track(i).req_sec    := sec_src(maxDevs(i) - 1.U)
+        irq_track(i).in_service := true.B
+      }
     }
 
     // When a hart writes a claim/complete register, then
@@ -296,7 +353,12 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
             assert(Mux(valid, completerDev === data.extract(log2Ceil(nDevices+1)-1, 0), true.B),
                    "completerDev should be consistent for all harts")
             completerDev := data.extract(log2Ceil(nDevices+1)-1, 0)
-            completer(i) := valid && enableVec0(i)(completerDev)
+            // Validate complete against irq_track: must have an in-service interrupt with matching ID
+            val track_ok = irq_track(i).in_service && (completerDev === irq_track(i).irq_id)
+            completer(i) := valid && enableVec0(i)(completerDev) && track_ok
+            when (valid && enableVec0(i)(completerDev) && track_ok) {
+              irq_track(i).in_service := false.B
+            }
             true.B
           },
           Some(RegFieldDesc(s"claim_complete_$i",
@@ -310,7 +372,7 @@ class TLPLIC(params: PLICParams, beatBytes: Int)(implicit p: Parameters) extends
       )
     }
 
-    node.regmap((priorityRegFields ++ pendingRegFields ++ enableRegFields ++ hartRegFields):_*)
+    node.regmap((priorityRegFields ++ pendingRegFields ++ enableRegFields ++ secSrcRegFields ++ worldStateRegFields ++ hartRegFields):_*)
 
     if (nDevices >= 2) {
       val claimed = claimer(0) && maxDevs(0) > 0.U
