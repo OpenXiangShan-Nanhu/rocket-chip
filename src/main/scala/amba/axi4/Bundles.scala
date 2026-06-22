@@ -22,6 +22,7 @@ abstract class AXI4BundleA(params: AXI4BundleParameters) extends AXI4BundleBase(
   val cache  = UInt(params.cacheBits.W)
   val prot   = UInt(params.protBits.W)
   val qos    = UInt(params.qosBits.W)  // 0=no QoS, bigger = higher priority
+  val atop   = UInt(6.W)               // AXI5 AWATOP
   val user   = BundleMap(params.requestFields.filter(_.key.isControl))
   val echo   = BundleMap(params.echoFields)
   // val region = UInt(4.W) // optional

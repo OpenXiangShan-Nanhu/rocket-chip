@@ -178,6 +178,7 @@ class TLToAXI4(val combinational: Boolean = true, val adapterName: Option[String
       arw.cache := 0.U // do not allow AXI to modify our transactions
       arw.prot  := AXI4Parameters.PROT_PRIVILEGED
       arw.qos   := 0.U // no QoS
+      arw.atop  := 0.U
       Connectable.waiveUnmatched(arw.user, in.a.bits.user) match {
         case (lhs, rhs) => lhs :<= rhs
       }
