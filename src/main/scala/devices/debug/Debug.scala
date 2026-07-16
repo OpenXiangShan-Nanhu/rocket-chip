@@ -1728,7 +1728,7 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     import CtrlState._
 
     // This is not an initialization!
-    val ctrlStateReg = Reg(chiselTypeOf(CtrlState(Waiting)))
+    val ctrlStateReg = RegInit(CtrlState(Waiting))
 
     val hartHalted   = haltedBitRegs(if (nComponents == 1) 0.U(0.W) else selectedHartReg)
     val ctrlStateNxt = WireInit(ctrlStateReg)
