@@ -640,7 +640,7 @@ class TLDebugModuleOuter(device: Device)(implicit p: Parameters) extends LazyMod
 
     io.innerCtrl.valid             := innerCtrlValid | innerCtrlValidReg
     io.innerCtrl.bits.hartsel      := Mux(hartselloWrEn, DMCONTROLWrData.hartsello, DMCONTROLReg.hartsello)
-    io.innerCtrl.bits.resumereq    := (resumereqWrEn & DMCONTROLWrData.resumereq) | innerCtrlResumeReqReg
+    io.innerCtrl.bits.resumereq    := (resumereqWrEn & DMCONTROLWrData.resumereq & ~DMCONTROLWrData.haltreq) | innerCtrlResumeReqReg
     io.innerCtrl.bits.ackhavereset := (ackhaveresetWrEn & DMCONTROLWrData.ackhavereset) | innerCtrlAckHaveResetReg
     io.innerCtrl.bits.hrmask       := hrmask
     if (supportHartArray) {
@@ -1336,9 +1336,10 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
           // remove those harts in resume and those in reset
           resumeReqRegs := (resumeReqRegs & ~(hartResumingIdIndex)) & ~(hartIsInResetSync.asUInt)
         }
-        when (resumereq) {
-          // set all sleceted harts to resumeReq, remove those in reset
-          resumeReqRegs := (resumeReqRegs | hamaskWrSel.asUInt) & ~(hartIsInResetSync.asUInt)
+        val resumeReqMask = hamaskWrSel.asUInt & haltedBitRegs
+        when (resumereq && resumeReqMask.orR) {
+          // 仅向选中且已暂停的核发送恢复请求，并排除复位中的核。
+          resumeReqRegs := (resumeReqRegs | resumeReqMask) & ~(hartIsInResetSync.asUInt)
         }
 
       }
