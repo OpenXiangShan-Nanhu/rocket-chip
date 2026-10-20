@@ -54,6 +54,10 @@ object SystemBusAccessModule
     val dataWriteAllowed = canStart
     // busy 中写 SBCS 的行为由规范留给实现；本实现忽略配置及 W1C 写，固定在途操作数。
     val sbcsWriteAllowed = enabled && !sbBusy
+    // done 只表示结束；只有整笔访问成功才允许自动递增，busyerror 不取消老事务。
+    val accessDone = sb2tl.module.io.rdDone || sb2tl.module.io.wrDone
+    val accessSucceeded = accessDone && !sb2tl.module.io.respError
+    val doAutoIncrement = accessSucceeded && SBCSFieldsReg.sbautoincrement
 
     val SBCSFieldsRegReset = WireInit(0.U.asTypeOf(new SBCSFields()))
     SBCSFieldsRegReset.sbversion   := 1.U(1.W) // This code implements a version of the spec after January 1, 2018
@@ -128,7 +132,7 @@ object SystemBusAccessModule
         }.otherwise {
           // 空闲时可准备新地址；sticky error 只阻止 read-on-address 的总线副作用。
           a := Mux(SBADDRESSWrEn(i) && addressWriteAllowed, SBADDRESSWrData(i),
-               Mux((sb2tl.module.io.rdDone || sb2tl.module.io.wrDone) && SBCSFieldsReg.sbautoincrement, autoIncrementedAddr(32*i+31,32*i), a))
+               Mux(doAutoIncrement, autoIncrementedAddr(32*i+31,32*i), a))
         }
 
         RegFieldGroup("dmi_sbaddr"+i, Some("SBA Address Register"), Seq(RWNotify(32, a, SBADDRESSWrData(i), SBADDRESSRdEn(i), SBADDRESSWrEn(i),
@@ -348,8 +352,17 @@ class SBToTL(implicit p: Parameters) extends LazyModule {
       x.fetch      := false.B
     }
 
-    val respError = d.bits.denied || d.bits.corrupt
-    io.respError := respError
+    // 只累计真正握手的响应拍；当前末拍错误也必须同拍送达完成判定。
+    val responseFire = responseValid && responseReady
+    val beatError = d.bits.denied || d.bits.corrupt
+    val responseErrorSeen = RegInit(false.B)
+    when(sbState === Idle.id.U) {
+      responseErrorSeen := false.B
+    }.elsewhen(responseFire && beatError) {
+      responseErrorSeen := true.B
+    }
+    val transactionError = responseErrorSeen || (responseFire && beatError)
+    io.respError := transactionError
 
     val wrTxValid = sbState === SBWriteRequest.id.U && requestValid && requestReady
     val rdTxValid = sbState === SBReadResponse.id.U && responseValid && responseReady
