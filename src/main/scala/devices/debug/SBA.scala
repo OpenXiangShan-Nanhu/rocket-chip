@@ -239,10 +239,11 @@ object SystemBusAccessModule
     }
 
     val newSbError = WireInit(NoError.id.U(3.W))
-    when(newAccessAttempt && sbAlignmentError) {
-      newSbError := AlgnError.id.U
-    }.elsewhen(newAccessAttempt && sbAccessError) {
+    // 先判访问大小是否支持，再判对齐；未对齐的非法 128-bit 请求也应报告 BadAccess=4。
+    when(newAccessAttempt && sbAccessError) {
       newSbError := BadAccess.id.U
+    }.elsewhen(newAccessAttempt && sbAlignmentError) {
+      newSbError := AlgnError.id.U
     }.elsewhen((sb2tl.module.io.wrEn && !sb2tl.module.io.wrLegal) ||
       (sb2tl.module.io.rdEn && !sb2tl.module.io.rdLegal)) {
       newSbError := BadAddr.id.U
