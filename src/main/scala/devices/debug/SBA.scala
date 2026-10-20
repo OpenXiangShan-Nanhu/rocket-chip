@@ -46,9 +46,18 @@ object SystemBusAccessModule
     // --- SBCS Status Register ---
     val SBCSFieldsReg = Reg(new SBCSFields()).suggestName("SBCSFieldsReg")
 
+    // 读回与访问保护共用实时 busy；SBCSFieldsReg.sbbusy 只是未使用的存储占位。
+    val sbBusy = sb2tl.module.io.sbStateOut =/= SystemBusAccessState.Idle.id.U
+    val enabled = dmactive && dmAuthenticated
+    val canStart = Wire(Bool())
+    val addressWriteAllowed = enabled && !sbBusy
+    val dataWriteAllowed = canStart
+    // busy 中写 SBCS 的行为由规范留给实现；本实现忽略配置及 W1C 写，固定在途操作数。
+    val sbcsWriteAllowed = enabled && !sbBusy
+
     val SBCSFieldsRegReset = WireInit(0.U.asTypeOf(new SBCSFields()))
     SBCSFieldsRegReset.sbversion   := 1.U(1.W) // This code implements a version of the spec after January 1, 2018
-    SBCSFieldsRegReset.sbbusy      := (sb2tl.module.io.sbStateOut =/= SystemBusAccessState.Idle.id.U)
+    SBCSFieldsRegReset.sbbusy      := false.B
     SBCSFieldsRegReset.sbaccess    := 2.U
     SBCSFieldsRegReset.sbasize     := sb2tl.module.edge.bundle.addressBits.U
     SBCSFieldsRegReset.sbaccess128 := (cfg.maxSupportedSBAccess == 128).B
@@ -58,6 +67,7 @@ object SystemBusAccessModule
     SBCSFieldsRegReset.sbaccess8   := (cfg.maxSupportedSBAccess >=   8).B
 
     val SBCSRdData         = WireInit(0.U.asTypeOf(new SBCSFields())).suggestName("SBCSRdData")
+    canStart := enabled && !sbBusy && !SBCSRdData.sberror.orR && !SBCSFieldsReg.sbbusyerror
 
     val SBCSWrDataVal      = WireInit(0.U(32.W))
     val SBCSWrData         = WireInit(SBCSWrDataVal.asTypeOf(new SBCSFields()))
@@ -116,7 +126,8 @@ object SystemBusAccessModule
         when (~dmactive || ~dmAuthenticated) {
           a := 0.U(32.W)
         }.otherwise {
-          a := Mux(SBADDRESSWrEn(i) && !SBCSRdData.sberror && !SBCSFieldsReg.sbbusy && !SBCSFieldsReg.sbbusyerror, SBADDRESSWrData(i),
+          // 空闲时可准备新地址；sticky error 只阻止 read-on-address 的总线副作用。
+          a := Mux(SBADDRESSWrEn(i) && addressWriteAllowed, SBADDRESSWrData(i),
                Mux((sb2tl.module.io.rdDone || sb2tl.module.io.wrDone) && SBCSFieldsReg.sbautoincrement, autoIncrementedAddr(32*i+31,32*i), a))
         }
 
@@ -128,7 +139,9 @@ object SystemBusAccessModule
       }
     }
 
-    sb2tl.module.io.addrIn := Mux(SBADDRESSWrEn(0),
+    // 只有真正接受的地址写可以旁路；忙写不能改变等待 A.ready 的请求地址。
+    val address0WriteAccepted = SBADDRESSWrEn(0) && addressWriteAllowed
+    sb2tl.module.io.addrIn := Mux(address0WriteAccepted,
       Cat(Cat(SBADDRESSFieldsReg.drop(1).reverse), SBADDRESSWrData(0)),
       Cat(SBADDRESSFieldsReg.reverse))
     anyAddressWrEn         := SBADDRESSWrEn.reduce(_ || _)
@@ -157,7 +170,7 @@ object SystemBusAccessModule
           when (~dmactive || ~dmAuthenticated) {
             d(j) := 0.U(8.W)
           }.otherwise {
-            d(j) := Mux(SBDATAWrEn(i) && !SBCSFieldsReg.sbbusy && !SBCSFieldsReg.sbbusyerror && !SBCSRdData.sberror, SBDATAWrData(i)(8*j+7,8*j),
+            d(j) := Mux(SBDATAWrEn(i) && dataWriteAllowed, SBDATAWrData(i)(8*j+7,8*j),
                     Mux(sb2tl.module.io.rdLoad(4*i+j), sb2tl.module.io.dataOut, d(j)))
           }
         }
@@ -172,7 +185,11 @@ object SystemBusAccessModule
       }
     }
 
-    sb2tl.module.io.dataIn := Mux(sb2tl.module.io.wrEn,Cat(SBDATAWrData.reverse),Cat(SBDATAFieldsReg.flatten.reverse))
+    // DATA0 触发时仅旁路本次低字，其余字继续使用此前已保存的数据。
+    val data0WriteAccepted = SBDATAWrEn(0) && dataWriteAllowed
+    sb2tl.module.io.dataIn := Mux(data0WriteAccepted,
+      Cat(Cat(SBDATAFieldsReg.drop(1).map(d => Cat(d.reverse)).reverse), SBDATAWrData(0)),
+      Cat(SBDATAFieldsReg.flatten.reverse))
     anyDataRdEn            := SBDATARdEn.reduce(_ || _)
     anyDataWrEn            := SBDATAWrEn.reduce(_ || _)
 
@@ -186,7 +203,7 @@ object SystemBusAccessModule
                         (SBCSFieldsReg.sbaccess === 4.U) && (SBCSFieldsReg.sbaccess128 =/= 1.U) || (SBCSFieldsReg.sbaccess > 4.U)
 
     val compareAddr = Wire(UInt(32.W)) // Need use written or latched address to detect error case depending on how transaction is initiated
-    compareAddr := Mux(SBADDRESSWrEn(0),SBADDRESSWrData(0),SBADDRESSFieldsReg(0))
+    compareAddr := Mux(address0WriteAccepted,SBADDRESSWrData(0),SBADDRESSFieldsReg(0))
 
     val sbAlignmentError = (SBCSFieldsReg.sbaccess === 1.U) && (compareAddr(0)   =/= 0.U) ||
                            (SBCSFieldsReg.sbaccess === 2.U) && (compareAddr(1,0) =/= 0.U) ||
@@ -196,22 +213,21 @@ object SystemBusAccessModule
     sbAccessError.suggestName("sbAccessError")
     sbAlignmentError.suggestName("sbAlignmentError")
 
-    sb2tl.module.io.wrEn     := dmAuthenticated && tryWrEn && !SBCSFieldsReg.sbbusy && !SBCSFieldsReg.sbbusyerror && !SBCSRdData.sberror && !sbAccessError && !sbAlignmentError
-    sb2tl.module.io.rdEn     := dmAuthenticated && tryRdEn && !SBCSFieldsReg.sbbusy && !SBCSFieldsReg.sbbusyerror && !SBCSRdData.sberror && !sbAccessError && !sbAlignmentError
+    sb2tl.module.io.wrEn     := canStart && tryWrEn && !sbAccessError && !sbAlignmentError
+    sb2tl.module.io.rdEn     := canStart && tryRdEn && !sbAccessError && !sbAlignmentError
     sb2tl.module.io.sizeIn   := SBCSFieldsReg.sbaccess
 
-    val sbBusy = (sb2tl.module.io.sbStateOut =/= SystemBusAccessState.Idle.id.U)
+    val busyAccess = enabled && sbBusy && (anyAddressWrEn || anyDataRdEn || anyDataWrEn)
 
     when (~dmactive || ~dmAuthenticated) {
       SBCSFieldsReg := SBCSFieldsRegReset
     }.otherwise {
-      SBCSFieldsReg.sbbusyerror     := Mux(sbbusyerrorWrEn && SBCSWrData.sbbusyerror,     false.B, // W1C
-                                       Mux(anyAddressWrEn && sbBusy,               true.B, // Set if a write to SBADDRESS occurs while busy
-                                       Mux((anyDataRdEn || anyDataWrEn) && sbBusy, true.B, SBCSFieldsReg.sbbusyerror))) // Set if any access to SBDATA occurs while busy
-      SBCSFieldsReg.sbreadonaddr    := Mux(sbreadonaddrWrEn,    SBCSWrData.sbreadonaddr   , SBCSFieldsReg.sbreadonaddr)
-      SBCSFieldsReg.sbautoincrement := Mux(sbautoincrementWrEn, SBCSWrData.sbautoincrement, SBCSFieldsReg.sbautoincrement)
-      SBCSFieldsReg.sbreadondata    := Mux(sbreadondataWrEn,    SBCSWrData.sbreadondata   , SBCSFieldsReg.sbreadondata)
-      SBCSFieldsReg.sbaccess        := Mux(sbaccessWrEn,        SBCSWrData.sbaccess, SBCSFieldsReg.sbaccess)
+      SBCSFieldsReg.sbbusyerror     := Mux(busyAccess, true.B,
+        Mux(sbcsWriteAllowed && sbbusyerrorWrEn && SBCSWrData.sbbusyerror, false.B, SBCSFieldsReg.sbbusyerror))
+      SBCSFieldsReg.sbreadonaddr    := Mux(sbcsWriteAllowed && sbreadonaddrWrEn,    SBCSWrData.sbreadonaddr, SBCSFieldsReg.sbreadonaddr)
+      SBCSFieldsReg.sbautoincrement := Mux(sbcsWriteAllowed && sbautoincrementWrEn, SBCSWrData.sbautoincrement, SBCSFieldsReg.sbautoincrement)
+      SBCSFieldsReg.sbreadondata    := Mux(sbcsWriteAllowed && sbreadondataWrEn,    SBCSWrData.sbreadondata, SBCSFieldsReg.sbreadondata)
+      SBCSFieldsReg.sbaccess        := Mux(sbcsWriteAllowed && sbaccessWrEn,        SBCSWrData.sbaccess, SBCSFieldsReg.sbaccess)
       SBCSFieldsReg.sbversion       := 1.U(1.W) // This code implements a version of the spec after January 1, 2018
     }
 
@@ -222,7 +238,7 @@ object SystemBusAccessModule
         sbErrorReg(i) := 0.U
     }.otherwise {
       for (i <- 0 until 3)
-        sbErrorReg(i) := Mux(sberrorWrEn && SBCSWrData.sberror(i) === 1.U, NoError.id.U.extract(i), // W1C
+        sbErrorReg(i) := Mux(sbcsWriteAllowed && sberrorWrEn && SBCSWrData.sberror(i) === 1.U, NoError.id.U.extract(i), // W1C
                          Mux((sb2tl.module.io.wrEn && !sb2tl.module.io.wrLegal) || (sb2tl.module.io.rdEn && !sb2tl.module.io.rdLegal), BadAddr.id.U.extract(i), // Bad address accessed
                          Mux((tryWrEn || tryRdEn) && sbAlignmentError, AlgnError.id.U.extract(i), // Address alignment error
                          Mux((tryWrEn || tryRdEn) && sbAccessError, BadAccess.id.U.extract(i), // Access size error
@@ -243,8 +259,8 @@ object SystemBusAccessModule
       SBCSRdData := 0.U.asTypeOf(new SBCSFields())
     }
 
-    property.cover(SBCSFieldsReg.sbbusyerror,    "SBCS Cover", "sberror set")
-    property.cover(SBCSFieldsReg.sbbusy === 3.U, "SBCS Cover", "sbbusyerror alignment error")
+    property.cover(SBCSFieldsReg.sbbusyerror, "SBCS Cover", "sbbusyerror set")
+    property.cover(SBCSRdData.sberror === AlgnError.id.U, "SBCS Cover", "sberror alignment error")
 
     property.cover((sb2tl.module.io.wrEn || sb2tl.module.io.rdEn) && SBCSFieldsReg.sbaccess === 0.U && !sbAccessError && !sbAlignmentError, "SBCS Cover", "8-bit access")
     property.cover((sb2tl.module.io.wrEn || sb2tl.module.io.rdEn) && SBCSFieldsReg.sbaccess === 1.U && !sbAccessError && !sbAlignmentError, "SBCS Cover", "16-bit access")
@@ -252,10 +268,10 @@ object SystemBusAccessModule
     property.cover((sb2tl.module.io.wrEn || sb2tl.module.io.rdEn) && SBCSFieldsReg.sbaccess === 3.U && !sbAccessError && !sbAlignmentError, "SBCS Cover", "64-bit access")
     property.cover((sb2tl.module.io.wrEn || sb2tl.module.io.rdEn) && SBCSFieldsReg.sbaccess === 4.U && !sbAccessError && !sbAlignmentError, "SBCS Cover", "128-bit access")
 
-    property.cover(SBCSFieldsReg.sbautoincrement && SBCSFieldsReg.sbbusy,  "SBCS Cover", "Access with autoincrement set")
-    property.cover(!SBCSFieldsReg.sbautoincrement && SBCSFieldsReg.sbbusy, "SBCS Cover", "Access without autoincrement set")
+    property.cover(SBCSFieldsReg.sbautoincrement && sbBusy,  "SBCS Cover", "Access with autoincrement set")
+    property.cover(!SBCSFieldsReg.sbautoincrement && sbBusy, "SBCS Cover", "Access without autoincrement set")
 
-    property.cover((sb2tl.module.io.wrEn || sb2tl.module.io.rdEn) && SBCSFieldsReg.sbaccess > 4.U, "SBCS Cover", "Invalid sbaccess value")
+    property.cover(canStart && (tryWrEn || tryRdEn) && sbAccessError, "SBCS Cover", "Invalid sbaccess value")
 
     (sbcsfields, sbaddrfields, sbdatafields)
   }
