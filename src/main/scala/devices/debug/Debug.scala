@@ -1772,7 +1772,9 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
         (result, current) => result || (current.U === accessRegisterCommandReg.regno)}
     } else false.B
 
-    when (commandRegIsAccessRegister) {
+    // command[19]为aarpostincrement（旧字段定义为reserved1）；本实现不支持，返回cmderr=2。
+    // 直接命令和autoexec共用保存命令的检查，不能成功执行却静默忽略自增。
+    when (commandRegIsAccessRegister && !COMMANDReg.asUInt(19)) {
       when (accessRegIsCustom && accessRegisterCommandReg.transfer && accessRegisterCommandReg.write === false.B) {
         commandRegIsUnsupported := false.B
       }.elsewhen (!accessRegisterCommandReg.transfer || accessRegIsGPR) {
