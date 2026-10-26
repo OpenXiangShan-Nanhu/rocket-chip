@@ -866,6 +866,7 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     // default is 1,after resume, resumeAcks get 0
     /** all harts resume ack status */
     val resumeAcks       = Wire(UInt(nComponents.W))
+    val abstractCommandBusy = WireInit(true.B)
 
     // --- regmapper outputs
 
@@ -979,7 +980,9 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     DMSTATUSRdData.version       := 2.U    // Version 0.13
     io.auth.map(a => DMSTATUSRdData.authbusy := a.dmAuthBusy)
 
-    val resumereq = io.innerCtrl.fire && io.innerCtrl.bits.resumereq
+    // 忙时仍消费跨域事件，但忽略其恢复及清ack副作用，不留到busy结束后再执行。
+    // 这里只按Inner接收时的busy判断，不能识别Outer在更早busy窗口内产生的延迟事件。
+    val resumereq = io.innerCtrl.fire && io.innerCtrl.bits.resumereq && !abstractCommandBusy
 
     when (dmAuthenticated) {
       DMSTATUSRdData.hasresethaltreq := true.B
@@ -1216,7 +1219,6 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     }
 
     // For busy, see below state machine.
-    val abstractCommandBusy = WireInit(true.B)
     ABSTRACTCSRdData.busy := abstractCommandBusy
     when (~dmAuthenticated) {   // read value must be 0 when not authenticated
       ABSTRACTCSRdData.datacount := 0.U
