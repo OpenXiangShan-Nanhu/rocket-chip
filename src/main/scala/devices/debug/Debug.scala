@@ -559,8 +559,9 @@ class TLDebugModuleOuter(device: Device)(implicit p: Parameters) extends LazyMod
       else RegField(1),
       WNotifyVal(1, 0.U,                      DMCONTROLWrData.resumereq, resumereqWrEn,
         RegFieldDesc("resumereq",       "resume request", reset=Some(0), access=RegFieldAccessType.W)),
-      WNotifyVal(1, DMCONTROLReg.haltreq,     DMCONTROLWrData.haltreq, haltreqWrEn,     // Spec says W, but maintaining previous behavior
-        RegFieldDesc("haltreq",         "halt request", reset=Some(0)))
+      // WARZ: DMI reads return zero; writes still set/clear the internal halt requests.
+      WNotifyVal(1, 0.U,                      DMCONTROLWrData.haltreq, haltreqWrEn,
+        RegFieldDesc("haltreq",         "halt request", reset=Some(0), access=RegFieldAccessType.W))
     ))
 
     val hartinfoRegFields = RegFieldGroup("dmi_hartinfo", Some("hart information"), Seq(
