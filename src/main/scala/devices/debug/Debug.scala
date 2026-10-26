@@ -1185,6 +1185,7 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     val ABSTRACTCSReg       = Reg(new ABSTRACTCSFields())
     val ABSTRACTCSWrData    = WireInit(0.U.asTypeOf(new ABSTRACTCSFields()))
     val ABSTRACTCSRdData    = WireInit(ABSTRACTCSReg)
+    val cmderrIsZero        = ABSTRACTCSReg.cmderr === 0.U
 
     val ABSTRACTCSRdEn = WireInit(false.B)
     val ABSTRACTCSWrEnMaybe = WireInit(false.B)
@@ -1199,23 +1200,20 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     val errorUnsupported = WireInit(false.B)
     val errorHaltResume  = WireInit(false.B)
 
+    val newCmderr = MuxCase(0.U(3.W), Seq(
+      errorBusy        -> DebugAbstractCommandError.ErrBusy.id.U,
+      errorException   -> DebugAbstractCommandError.ErrException.id.U,
+      errorUnsupported -> DebugAbstractCommandError.ErrNotSupported.id.U,
+      errorHaltResume  -> DebugAbstractCommandError.ErrHaltResume.id.U
+    ))
     when (~io.dmactive || ~dmAuthenticated) {
       ABSTRACTCSReg := ABSTRACTCSReset
-    }.otherwise {
-      when (errorBusy){
-        ABSTRACTCSReg.cmderr := DebugAbstractCommandError.ErrBusy.id.U
-      }.elsewhen (errorException) {
-        ABSTRACTCSReg.cmderr := DebugAbstractCommandError.ErrException.id.U
-      }.elsewhen (errorUnsupported) {
-        ABSTRACTCSReg.cmderr := DebugAbstractCommandError.ErrNotSupported.id.U
-      }.elsewhen (errorHaltResume) {
-        ABSTRACTCSReg.cmderr := DebugAbstractCommandError.ErrHaltResume.id.U
-      }.otherwise {
-        //W1C
-        when (ABSTRACTCSWrEn){
-          ABSTRACTCSReg.cmderr := ABSTRACTCSReg.cmderr & ~(ABSTRACTCSWrData.cmderr);
-        }
-      }
+    }.elsewhen (cmderrIsZero && newCmderr =/= 0.U) {
+      // 硬件只记录首错；在途命令的后续错误也不能覆盖已保存的错误码。
+      ABSTRACTCSReg.cmderr := newCmderr
+    }.elsewhen (ABSTRACTCSWrEn) {
+      // W1C独立于被忽略的新错误；只有空闲时的合法写才允许逐位清除。
+      ABSTRACTCSReg.cmderr := ABSTRACTCSReg.cmderr & ~ABSTRACTCSWrData.cmderr
     }
 
     // For busy, see below state machine.
@@ -1283,7 +1281,8 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     val COMMANDWrEnLegal    = WireInit(false.B)
     val COMMANDRdEn  = WireInit(false.B)
 
-    val COMMANDWrEn = COMMANDWrEnMaybe && COMMANDWrEnLegal
+    // COMMANDWrEnLegal仅表示空闲，供原始忙访问检测使用；错误态整笔忽略命令写。
+    val COMMANDWrEn = COMMANDWrEnMaybe && COMMANDWrEnLegal && cmderrIsZero
     val COMMANDRdData = COMMANDReg
 
     when (~io.dmactive || ~dmAuthenticated) {
@@ -1783,8 +1782,8 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
       }
     }
 
-    val wrAccessRegisterCommand  = COMMANDWrEn && commandWrIsAccessRegister  && (ABSTRACTCSReg.cmderr === 0.U)
-    val regAccessRegisterCommand = autoexec    && commandRegIsAccessRegister && (ABSTRACTCSReg.cmderr === 0.U)
+    val wrAccessRegisterCommand  = COMMANDWrEn && commandWrIsAccessRegister
+    val regAccessRegisterCommand = autoexec && commandRegIsAccessRegister && cmderrIsZero
 
     //------------------------
     // Variable ROM STATE MACHINE
@@ -1795,7 +1794,7 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
         ctrlStateNxt := CtrlState(CheckGenerate)
       }.elsewhen (commandWrIsUnsupported) { // These checks are really on the command type.
         errorUnsupported := true.B
-      }.elsewhen (autoexec && commandRegIsUnsupported) {
+      }.elsewhen (autoexec && cmderrIsZero && commandRegIsUnsupported) {
         errorUnsupported := true.B
       }
     }.elsewhen (ctrlStateReg === CtrlState(CheckGenerate)){
