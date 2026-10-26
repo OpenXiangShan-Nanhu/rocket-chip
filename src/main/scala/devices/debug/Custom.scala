@@ -13,9 +13,15 @@ import org.chipsalliance.diplomacy.nodes._
 
 case class DebugCustomParams(
   addrs: List[Int],
-  width: Int
+  width: Int,
+  // Preserve each register's width when a crossbar combines differently sized sources.
+  addrWidths: Map[Int, Int] = Map.empty
 ) {
   require (width % 8 == 0, s"Currently only support custom debug widths which are multiples of 8, not ${width}")
+  require (addrWidths.forall { case (addr, bits) =>
+    addrs.contains(addr) && bits > 0 && bits <= width && bits % 8 == 0
+  }, "Custom register widths must describe existing addresses and fit the source data bus")
+  def widthFor(addr: Int): Int = addrWidths.getOrElse(addr, width)
 }
 
 case class DebugCustomNull()
@@ -61,7 +67,8 @@ class DebugCustomXbar(
         val all_addrs = seq.map{_.addrs}.flatten
         require(all_addrs.size == all_addrs.distinct.size, "Different Custom sources can't use the same addresses.")
         val max_width = seq.foldLeft(0){(result, current) => result max current.width}
-        DebugCustomParams(all_addrs.toList, max_width)
+        val addr_widths = seq.flatMap(p => p.addrs.map(addr => addr -> p.widthFor(addr))).toMap
+        DebugCustomParams(all_addrs.toList, max_width, addr_widths)
       }
     },
     sinkFn = { seq => new DebugCustomNull()},
@@ -84,7 +91,7 @@ class DebugCustomXbar(
     }
     // mux correct 'ready' and 'data' based on address
     sink.ready := (decoded zip sources).foldLeft(false.B){case (result, (d, i)) => result || (d & i.ready)}
-    sink.data := (decoded zip sources).foldLeft(0.U){ case (result, (d, i)) => result | Mux(i.ready, i.data, 0.U)}
+    sink.data := (decoded zip sources).foldLeft(0.U){ case (result, (d, i)) => result | Mux(d && i.ready, i.data, 0.U)}
 
   }
 }

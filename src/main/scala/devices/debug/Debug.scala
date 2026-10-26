@@ -885,9 +885,9 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     // progbuf and abstract data: byte-addressable control logic
     // AccessLegal is set only when state = waiting
     // RdEn and WrEnMaybe : contrl signal drived by DMI bus
-    val dmiProgramBufferRdEn = WireInit(VecInit(Seq.fill(cfg.nProgramBufferWords * 4) {false.B} ))
+    val dmiProgramBufferRdEn = WireInit(0.U.asTypeOf(Vec(cfg.nProgramBufferWords * 4, Bool())))
     val dmiProgramBufferAccessLegal = WireInit(false.B)
-    val dmiProgramBufferWrEnMaybe = WireInit(VecInit(Seq.fill(cfg.nProgramBufferWords * 4) {false.B} ))
+    val dmiProgramBufferWrEnMaybe = WireInit(0.U.asTypeOf(Vec(cfg.nProgramBufferWords * 4, Bool())))
 
     val dmiAbstractDataRdEn = WireInit(VecInit(Seq.fill(cfg.nAbstractDataWords * 4) {false.B} ))
     val dmiAbstractDataAccessLegal = WireInit(false.B)
@@ -1257,19 +1257,19 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     val dmiAbstractDataAccessVec  = WireInit(VecInit(Seq.fill(cfg.nAbstractDataWords * 4) {false.B} ))
     dmiAbstractDataAccessVec := (dmiAbstractDataWrEnMaybe zip dmiAbstractDataRdEn).map{ case (r,w) => r | w}
     // Program Buffer access vector(byte-addressable)
-    val dmiProgramBufferAccessVec  = WireInit(VecInit(Seq.fill(cfg.nProgramBufferWords * 4) {false.B} ))
+    val dmiProgramBufferAccessVec  = WireInit(0.U.asTypeOf(Vec(cfg.nProgramBufferWords * 4, Bool())))
     dmiProgramBufferAccessVec := (dmiProgramBufferWrEnMaybe zip dmiProgramBufferRdEn).map{ case (r,w) => r | w}
     // at least one word access
     val dmiAbstractDataAccess  = dmiAbstractDataAccessVec.reduce(_ || _ )
-    val dmiProgramBufferAccess = dmiProgramBufferAccessVec.reduce(_ || _)
+    val dmiProgramBufferAccess = dmiProgramBufferAccessVec.foldLeft(false.B)(_ || _)
 
     // This will take the shorter of the lists, which is what we want.
     val autoexecData  = WireInit(VecInit(Seq.fill(cfg.nAbstractDataWords) {false.B} ))
-    val autoexecProg  = WireInit(VecInit(Seq.fill(cfg.nProgramBufferWords) {false.B} ))
+    val autoexecProg  = WireInit(0.U.asTypeOf(Vec(cfg.nProgramBufferWords, Bool())))
       (autoexecData zip ABSTRACTAUTOReg.autoexecdata.asBools).zipWithIndex.foreach {case (t, i) => t._1 := dmiAbstractDataAccessVec(i * 4) && t._2 }
       (autoexecProg zip ABSTRACTAUTOReg.autoexecprogbuf.asBools).zipWithIndex.foreach {case (t, i) => t._1 := dmiProgramBufferAccessVec(i * 4) && t._2}
 
-    val autoexec = autoexecData.reduce(_ || _) || autoexecProg.reduce(_ || _)
+    val autoexec = autoexecData.reduce(_ || _) || autoexecProg.foldLeft(false.B)(_ || _)
 
     //---- COMMAND
 
@@ -1285,6 +1285,7 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     // COMMANDWrEnLegal仅表示空闲，供原始忙访问检测使用；错误态整笔忽略命令写。
     val COMMANDWrEn = COMMANDWrEnMaybe && COMMANDWrEnLegal && cmderrIsZero
     val COMMANDRdData = COMMANDReg
+    val accessRegisterCommandReg = WireInit(COMMANDReg.asUInt.asTypeOf(new ACCESS_REGISTERFields()))
 
     when (~io.dmactive || ~dmAuthenticated) {
       COMMANDReg := COMMANDReset
@@ -1431,8 +1432,10 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
         WNotifyVal(cfg.nAbstractDataWords, ABSTRACTAUTORdData.autoexecdata, ABSTRACTAUTOWrData.autoexecdata, autoexecdataWrEnMaybe,
           RegFieldDesc("autoexecdata", "abstract command data autoexec", reset=Some(0))),
         RegField(16-cfg.nAbstractDataWords),
-        WNotifyVal(cfg.nProgramBufferWords, ABSTRACTAUTORdData.autoexecprogbuf, ABSTRACTAUTOWrData.autoexecprogbuf, autoexecprogbufWrEnMaybe,
-          RegFieldDesc("autoexecprogbuf", "abstract command progbuf autoexec", reset=Some(0))))),
+        if (cfg.nProgramBufferWords > 0)
+          WNotifyVal(cfg.nProgramBufferWords, ABSTRACTAUTORdData.autoexecprogbuf, ABSTRACTAUTOWrData.autoexecprogbuf, autoexecprogbufWrEnMaybe,
+            RegFieldDesc("autoexecprogbuf", "abstract command progbuf autoexec", reset=Some(0)))
+        else RegField(16))),
       (DMI_COMMAND     << 2) -> RegFieldGroup("dmi_command", Some("Abstract Command Register"),
         Seq(RWNotify(32, COMMANDRdData.asUInt, COMMANDWrDataVal, COMMANDRdEn, COMMANDWrEnMaybe,
         Some(RegFieldDesc("dmi_command", "abstract command register", reset=Some(0), volatile=true))))),
@@ -1478,7 +1481,8 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
       val custom_bytes =  Seq.tabulate(customP.width/8){i => custom_data.slice(i*8, (i+1)*8).asUInt}
       when (custom.ready && custom.valid) {
         (abstractDataMem zip custom_bytes).zipWithIndex.foreach {case ((a, b), i) =>
-          a := b
+          // A narrow Custom read must leave the other abstract data bytes untouched.
+          when (i.U < (1.U << accessRegisterCommandReg.size)) { a := b }
         }
       }
     }
@@ -1529,10 +1533,6 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     //----------------------------
     // Abstract Command Decoding & Generation
     //----------------------------
-
-    val accessRegisterCommandWr  = WireInit(COMMANDWrData.asUInt.asTypeOf(new ACCESS_REGISTERFields()))
-    /** real COMMAND*/
-    val accessRegisterCommandReg = WireInit(COMMANDReg.asUInt.asTypeOf(new ACCESS_REGISTERFields()))
 
     // TODO: Quick Access
 
@@ -1764,20 +1764,35 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
     val commandRegBadHaltResume = WireInit(false.B)
 
     // We only support abstract commands for GPRs and any custom registers, if specified.
-    val accessRegIsLegalSize = (accessRegisterCommandReg.size === 2.U) || (accessRegisterCommandReg.size === 3.U)
+    val accessRegFitsData = (1.U << accessRegisterCommandReg.size) <= (cfg.nAbstractDataWords * 4).U
+    val accessRegIsLegalSize = ((accessRegisterCommandReg.size === 2.U) || (accessRegisterCommandReg.size === 3.U)) && accessRegFitsData
     val accessRegIsGPR = (accessRegisterCommandReg.regno >= 0x1000.U && accessRegisterCommandReg.regno <= 0x101F.U) && accessRegIsLegalSize
     val accessRegIsCustom = if (needCustom) {
       val (custom, customP) = customNode.in.head
       customP.addrs.foldLeft(false.B){
         (result, current) => result || (current.U === accessRegisterCommandReg.regno)}
     } else false.B
+    val accessRegCustomSizeSupported = if (needCustom) {
+      val customP = customNode.in.head._2
+      customP.addrs.map { addr =>
+        val sizes = Seq(2, 3, 4).filter(size => (8 << size) <= customP.widthFor(addr) &&
+          (1 << size) <= cfg.nAbstractDataWords * 4)
+        (accessRegisterCommandReg.regno === addr.U) &&
+          sizes.map(size => accessRegisterCommandReg.size === size.U).foldLeft(false.B)(_ || _)
+      }.foldLeft(false.B)(_ || _)
+    } else false.B
+    val accessRegUsesCustom = accessRegisterCommandReg.transfer && accessRegIsCustom
+    val accessRegPostexecSupported = !accessRegisterCommandReg.postexec || (cfg.nProgramBufferWords > 0).B
 
-    // command[19]为aarpostincrement（旧字段定义为reserved1）；本实现不支持，返回cmderr=2。
-    // 直接命令和autoexec共用保存命令的检查，不能成功执行却静默忽略自增。
-    when (commandRegIsAccessRegister && !accessRegisterCommandReg.reserved0.asBool && !COMMANDReg.asUInt(19)) {
-      when (accessRegIsCustom && accessRegisterCommandReg.transfer && accessRegisterCommandReg.write === false.B) {
+    // bit23 is defined as zero; bit19 is the unsupported aarpostincrement option.
+    // Direct commands and autoexec share this check before either execution path starts.
+    when (commandRegIsAccessRegister && !accessRegisterCommandReg.reserved0.asBool &&
+      !COMMANDReg.asUInt(19) && accessRegPostexecSupported) {
+      // Custom supports reads only; explicitly reject postexec rather than silently skip it.
+      when (accessRegUsesCustom && !accessRegisterCommandReg.write &&
+        accessRegCustomSizeSupported && !accessRegisterCommandReg.postexec) {
         commandRegIsUnsupported := false.B
-      }.elsewhen (!accessRegisterCommandReg.transfer || accessRegIsGPR) {
+      }.elsewhen (!accessRegUsesCustom && (!accessRegisterCommandReg.transfer || accessRegIsGPR)) {
         commandRegIsUnsupported := false.B
         commandRegBadHaltResume := ~hartHalted
       }
@@ -1812,7 +1827,7 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
         errorHaltResume := true.B
         ctrlStateNxt := CtrlState(Waiting)
       }.otherwise {
-        when(accessRegIsCustom) {
+        when(accessRegUsesCustom) {
           ctrlStateNxt := CtrlState(Custom)
         }.otherwise {
           ctrlStateNxt := CtrlState(Exec)
