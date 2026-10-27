@@ -1284,7 +1284,8 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
 
     // COMMANDWrEnLegal仅表示空闲，供原始忙访问检测使用；错误态整笔忽略命令写。
     val COMMANDWrEn = COMMANDWrEnMaybe && COMMANDWrEnLegal && cmderrIsZero
-    val COMMANDRdData = COMMANDReg
+    // WARZ applies only to the DMI read port; execution and autoexec use COMMANDReg.
+    val COMMANDRdData = 0.U(32.W)
     val accessRegisterCommandReg = WireInit(COMMANDReg.asUInt.asTypeOf(new ACCESS_REGISTERFields()))
 
     when (~io.dmactive || ~dmAuthenticated) {
@@ -1438,7 +1439,7 @@ class TLDebugModuleInner(device: Device, getNComponents: () => Int, beatBytes: I
         else RegField(16))),
       (DMI_COMMAND     << 2) -> RegFieldGroup("dmi_command", Some("Abstract Command Register"),
         Seq(RWNotify(32, COMMANDRdData.asUInt, COMMANDWrDataVal, COMMANDRdEn, COMMANDWrEnMaybe,
-        Some(RegFieldDesc("dmi_command", "abstract command register", reset=Some(0), volatile=true))))),
+        Some(RegFieldDesc("dmi_command", "abstract command register", reset=Some(0), access=RegFieldAccessType.W))))),
       (DMI_DATA0       << 2) -> RegFieldGroup("dmi_data", Some("abstract command data registers"), abstractDataMem.zipWithIndex.map{case (x, i) =>
         RWNotify(8, Mux(dmAuthenticated, x, 0.U), abstractDataNxt(i),
         dmiAbstractDataRdEn(i),
